@@ -1,4 +1,4 @@
-# app.py (v5.1 Minimal) — CSV columns: store_id,name,sales_id,order_date,item_id,quantity,price
+# app.py (v5.2 Minimal) — CSV columns: store_id,name,sales_id,order_date,item_id,quantity,price
 # Mapping rules fixed per vendor:
 # - Foodstuffs: item_id=Article Number (first 6+ digit token), quantity=Order Qty, price=Price Per Ord. Unit; store name from "Delivery To"
 # - WWNZ:       item_id=ITEM NO,       quantity=ORD QTY,     price=PRICE EXCL;               store name from "Deliver To"
@@ -84,6 +84,16 @@ def detect_vendor(text_concat: str) -> str|None:
             return v
     return None
 
+def keyword_hits(text: str):
+    text_u = (text or '').upper()
+    def count(keys):
+        return sum(text_u.count(k.upper()) for k in keys)
+    return {
+        'Foodstuffs_NI': count(VENDOR_PROFILES['Foodstuffs_NI']['detect_keywords']),
+        'WWNZ': count(VENDOR_PROFILES['WWNZ']['detect_keywords']),
+        'MyFoodBag': count(VENDOR_PROFILES['MyFoodBag']['detect_keywords'])
+    }
+
 def normalize_numeric(series):
     s = pd.Series(series)
     s = s.apply(lambda x: (x[0] if isinstance(x, (list, tuple)) and len(x)>0 else x))
@@ -109,7 +119,7 @@ def store_lookup(name_text, store_map_df):
 
 # ---------- vendor parsers (line-based) ----------
 def parse_foodstuffs(text):
-    # Example: "130 5251600 CARTON GINGER 5KG ... 9 EA 5 26.69 ... 229.32"
+    # Example line: "130 5251600 CARTON GINGER 5KG ... 9 EA 5 26.69 ... 229.32"
     pat = re.compile(
         r"^\s*\d+\s+(?P<article>\d{6,})\s+[A-Z0-9$]+\s+.+?\s+(?P<qty>\d+)\s+[A-Z]{2,4}\s+\d+\s+\$?(?P<price>[\d,]+\.\d{2}).*?\$?[\d,]+\.\d{2}\s*$",
         re.I
@@ -126,7 +136,7 @@ def parse_foodstuffs(text):
     return pd.DataFrame(rows)
 
 def parse_wwnz(text):
-    # Expect columns: GTIN  ITEM DESCRIPTION  ITEM NO  OM  TIxHI  ORD QTY  PRICE EXCL ...
+    # Expect: GTIN  ITEM DESCRIPTION  ITEM NO  OM  TIxHI  ORD QTY  PRICE EXCL ...
     pat = re.compile(
         r"^\s*\d+\s+\d{8,14}\s+.+?\s+(?P<itemno>\d{5,})\s+\S+\s+\S+\s+(?P<qty>[\d,]+)\s+\$?(?P<price>[\d,]+\.\d{2})\s*$",
         re.I
@@ -189,27 +199,42 @@ if uploaded:
             fp.write_bytes(f.read())
             text = pdftotext_layout(str(fp))
 
+        hits = keyword_hits(text)
         active_vendor = detect_vendor(text) if vendor_choice=="Auto" else vendor_choice
-        if not active_vendor:
-            st.error(f"{f.name}: 未识别供应商")
-            continue
-        prof = VENDOR_PROFILES[active_vendor]
 
+        # Auto fallback: try all parsers and pick the one with most rows
+        body = None
+        chosen_by_rows = None
+        if active_vendor is None and vendor_choice == "Auto":
+            fs_df = parse_foodstuffs(text)
+            ww_df = parse_wwnz(text)
+            mfb_df = parse_mfb(text)
+            sizes = {'Foodstuffs_NI': len(fs_df), 'WWNZ': len(ww_df), 'MyFoodBag': len(mfb_df)}
+            if any(sizes.values()):
+                chosen_by_rows = max(sizes, key=lambda k: sizes[k])
+                active_vendor = chosen_by_rows
+                body = {'Foodstuffs_NI': fs_df, 'WWNZ': ww_df, 'MyFoodBag': mfb_df}[chosen_by_rows]
+
+        if active_vendor is None:
+            st.error(f"{f.name}: 未识别供应商（关键词命中：{hits}）。可在左侧手动选择供应商后再试。")
+            continue
+
+        prof = VENDOR_PROFILES[active_vendor]
         sales_id = extract(prof["header_extract"].get("PO_Number"), text)
-        # order_date 优先 Delivery_Date，其次 Order_Date
         order_date = extract(prof["header_extract"].get("Delivery_Date") or prof["header_extract"].get("Order_Date"), text)
         order_date = parse_date_safe(order_date)
         name_txt = extract(prof["store_regex"], text)
 
-        if active_vendor == "Foodstuffs_NI":
-            body = parse_foodstuffs(text)
-        elif active_vendor == "WWNZ":
-            body = parse_wwnz(text)
-        else:
-            body = parse_mfb(text)
+        if body is None:
+            if active_vendor == "Foodstuffs_NI":
+                body = parse_foodstuffs(text)
+            elif active_vendor == "WWNZ":
+                body = parse_wwnz(text)
+            else:
+                body = parse_mfb(text)
 
-        body["quantity"] = normalize_numeric(body["quantity"])
-        body["price"] = normalize_numeric(body["price"])
+        body["quantity"] = normalize_numeric(body.get("quantity"))
+        body["price"] = normalize_numeric(body.get("price"))
 
         store_id, mapped_name = store_lookup(name_txt, store_map_df)
         final_name = mapped_name or name_txt
@@ -224,9 +249,11 @@ if uploaded:
             "price": body.get("price")
         })
 
-        st.markdown(f"**📄 {f.name}** · 供应商：**{active_vendor}**")
+        info = f"**📄 {f.name}** · 供应商：**{active_vendor}**"
+        if chosen_by_rows:
+            info += "（自动回退：按解析到的行数判定）"
+        st.markdown(info)
         st.dataframe(out, use_container_width=True)
-        # Per-file download
         st.download_button(
             label=f"⬇️ 下载 {Path(f.name).stem}.csv",
             data=out.to_csv(index=False).encode("utf-8-sig"),
