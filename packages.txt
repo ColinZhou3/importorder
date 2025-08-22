@@ -1,4 +1,0 @@
-ghostscript
-default-jre
-tesseract-ocr
-poppler-utils
