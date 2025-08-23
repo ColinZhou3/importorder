@@ -1,13 +1,18 @@
-# PO PDF → CSV (Minimal)
+# PDF to CSV Converter
 
-Exports exactly 7 columns: `store_id,name,sales_id,order_date,item_id,quantity,price`.
-Vendor-specific parsing is line-based from `pdftotext -layout`.
+Streamlit应用，用于将PO PDF转换为CSV格式。
 
-## Deploy
-1) Put these files in your GitHub repo root:
-   - app.py
-   - requirements.txt
-   - packages.txt
-2) (optional) Add `store_map.csv` with columns `name,store_id` for fuzzy mapping.
-3) Streamlit Cloud → New app → point to `app.py`.
+支持供应商：
+- Foodstuffs North Island
+- Woolworths NZ  
+- My Food Bag
 
+## 使用方法
+1. 上传PDF文件
+2. 选择供应商（或使用自动检测）
+3. 下载生成的CSV文件
+
+## 部署到Streamlit Cloud
+1. Fork此仓库
+2. 在 streamlit.io 连接GitHub仓库
+3. 部署应用
